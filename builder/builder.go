@@ -97,18 +97,18 @@ func routes(reg *cookoo.Registry) {
 				Fn:   etcd.MakeDir,
 				Using: []cookoo.Param{
 					{Name: "path", From: "cxt:newdir"},
-					{Name: "cleint", From: "cxt:client"},
+					{Name: "client", From: "cxt:client"},
 				},
 			},
 			cookoo.Cmd{
 				Name:  "once",
 				Fn:    confd.RunOnce,
-				Using: []cookoo.Param{{Name: "path", From: "cxt:ETCD"}},
+				Using: []cookoo.Param{{Name: "node", From: "cxt:ETCD"}},
 			},
 			cookoo.Cmd{
 				Name:  "confd",
 				Fn:    confd.Run,
-				Using: []cookoo.Param{{Name: "path", From: "cxt:ETCD"}},
+				Using: []cookoo.Param{{Name: "node", From: "cxt:ETCD"}},
 			},
 			cookoo.Cmd{
 				Name: "dockerclean",
@@ -121,6 +121,8 @@ func routes(reg *cookoo.Registry) {
 // Sleep delays the execution of the remainder of the chain of commands.
 func Sleep(c cookoo.Context, p *cookoo.Params) (interface{}, cookoo.Interrupt) {
 	dur := p.Get("duration", 10*time.Millisecond).(time.Duration)
+	c.Logf("info", "Sleeping.")
 	time.Sleep(dur)
+	c.Logf("info", "Woke up.")
 	return true, nil
 }

@@ -84,7 +84,7 @@ func Get(c cookoo.Context, p *cookoo.Params) (interface{}, cookoo.Interrupt) {
 	path := p.Get("path", "/").(string)
 
 	res, err := client.Get(path, false, false)
-	c.Logf("debug", "Result: %v", res)
+	c.Logf("debug", "Result: %V", res)
 	return res, err
 }
 
@@ -110,7 +110,7 @@ func MakeDir(c cookoo.Context, p *cookoo.Params) (interface{}, cookoo.Interrupt)
 	}
 
 	res, err := client.CreateDir(name, ttl)
-	c.Logf("debug", "Result: %v", res)
+	c.Logf("debug", "Result: %V", res)
 	return res, err
 }
 

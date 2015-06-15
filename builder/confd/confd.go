@@ -27,7 +27,7 @@ import (
 //
 func RunOnce(c cookoo.Context, p *cookoo.Params) (interface{}, cookoo.Interrupt) {
 
-	node := p.Get("node", "localhost:4001").(string)
+	node := p.Get("node", "127.0.0.1:4001").(string)
 	cmd := exec.Command("confd", "-onetime", "-node", node, "-log-level", "error")
 
 	fmt.Println("Building confd templates. This may take a moment.")
@@ -35,6 +35,7 @@ func RunOnce(c cookoo.Context, p *cookoo.Params) (interface{}, cookoo.Interrupt)
 		c.Logf("error", string(out))
 		return out, err
 	} else {
+		c.Logf("info", "Templates generated for %s", node)
 		return out, nil
 	}
 
@@ -54,7 +55,7 @@ func RunOnce(c cookoo.Context, p *cookoo.Params) (interface{}, cookoo.Interrupt)
 func Run(c cookoo.Context, p *cookoo.Params) (interface{}, cookoo.Interrupt) {
 	// TODO: What should be done if confd dies at some point?
 
-	node := p.Get("node", "localhost:4001").(string)
+	node := p.Get("node", "127.0.0.1:4001").(string)
 	interval := strconv.Itoa(p.Get("interval", 5).(int))
 
 	cmd := exec.Command("confd", "-log-level", "error", "-node", node, "-interval", interval)
@@ -62,6 +63,7 @@ func Run(c cookoo.Context, p *cookoo.Params) (interface{}, cookoo.Interrupt) {
 		return false, err
 	}
 
+	c.Logf("info", "Watching confd.")
 	log := c.Logf
 	safely.Go(func() {
 		err := cmd.Wait()

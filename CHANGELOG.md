@@ -1,3 +1,21 @@
+### v1.7.2 -> v1.7.3
+
+#### Fixes
+
+ - [`87d2ba3`](https://github.com/deis/deis/commit/87d2ba3caaafe89b911589ff149a932f31e31cf4) builder: call ls rather than using a wildcard
+
+### v1.7.1 -> v1.7.2
+
+#### Fixes
+
+- [`c73c8f7`](https://github.com/deis/deis/commit/c73c8f7e0fc96576f90a6cd4c2a66d08ba2dbae9) logger: adjust publish and ttl times to seconds
+
+### v1.7.0 -> v1.7.1
+
+#### Fixes
+
+ - [`e8df401`](https://github.com/deis/deis/commit/e8df4010f52378b2ebd6195581080d82f2b3acf9) deisctl: Add extension when refreshing units
+
 ### v1.6.1 -> v1.7.0
 
 #### Features

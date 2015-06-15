@@ -30,10 +30,9 @@ Patch Release
 
     $ ./contrib/bumpver/bumpver -f A.B.C A.B.D \
         README.md \
-        builder/image/Dockerfile \
-        builder/image/slugbuilder/Dockerfile \
-        builder/image/slugrunner/Dockerfile \
-        cache/Dockerfile \
+        builder/rootfs/Dockerfile \
+        builder/rootfs/usr/local/src/slugbuilder/Dockerfile \
+        builder/rootfs/usr/local/src/slugrunner/Dockerfile \
         cache/image/Dockerfile \
         client/deis.py \
         client/setup.py \
@@ -55,13 +54,12 @@ Patch Release
         registry/Dockerfile \
         router/image/Dockerfile \
         store/base/Dockerfile \
+        swarm/image/Dockerfile \
         version/version.go
 
-- Update the CHANGELOG to include all commits since the last release
-
-  - ``./contrib/util/generate-changelog.sh vA.B.C | cat - CHANGELOG.md > tmp && mv tmp CHANGELOG.md``
-  - change ``HEAD`` at the top to ``vA.B.D`` (the new release)
-  - remove any empty sections and proofread for consistency
+- Update the CHANGELOG to include all commits since the last release. Since
+  ``contrib/util/generate-changelog.sh`` only works for merges, you'll have
+  to manually add the changes to the CHANGELOG.
 
 - ``git grep A.B.C`` to ensure that no old version strings were missed
 
@@ -89,6 +87,7 @@ Major or Minor Release
         client/setup.py \
         controller/deis/__init__.py \
         deisctl/deis-version \
+        docs/reference/api-v1.5.rst \
         version/version.go
 
     $ ./contrib/bumpver/bumpver -f A.B.C A.B.D \
@@ -98,7 +97,6 @@ Major or Minor Release
         docs/installing_deis/install-deisctl.rst \
         docs/installing_deis/install-platform.rst \
         docs/managing_deis/upgrading-deis.rst \
-        docs/reference/api-v1.4.rst \
         docs/troubleshooting_deis/index.rst
 
   - Edit deisctl/cmd/cmd.go and change the default in the RefreshUnits usage string
@@ -179,7 +177,7 @@ Patch Release
       docs/installing_deis/install-deisctl.rst \
       docs/installing_deis/install-platform.rst \
       docs/managing_deis/upgrading-deis.rst \
-      docs/reference/api-v1.3.rst \
+      docs/reference/api-v1.4.rst \
       docs/troubleshooting_deis/index.rst
 
   - ``git commit -a -m 'chore(release): update version in master to vA.B.D'``

@@ -31,7 +31,7 @@ apk add /tmp/pv-1.6.0-r0.apk
 /etc/init.d/postgresql stop || true
 
 # install pip
-curl -sSL https://raw.githubusercontent.com/pypa/pip/6.1.1/contrib/get-pip.py | python -
+curl -sSL https://raw.githubusercontent.com/pypa/pip/7.0.3/contrib/get-pip.py | python -
 
 # install wal-e
 cd /tmp
@@ -41,10 +41,10 @@ git clone https://github.com/wal-e/wal-e.git
 cd /tmp/wal-e
 git checkout c6dd4b1
 
-pip install . oslo.config>=1.12.0
+pip install --disable-pip-version-check --no-cache-dir . oslo.config>=1.12.0
 
 # python port of daemontools
-pip install envdir
+pip install --disable-pip-version-check --no-cache-dir envdir
 
 mkdir -p /etc/wal-e.d/env /etc/postgresql/main /var/lib/postgresql
 
