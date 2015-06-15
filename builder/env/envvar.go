@@ -13,6 +13,10 @@ import (
 //
 // As with all environment variables, the default value must be a string.
 //
+// WARNING: Since parameters are a map, order of processing is not
+// guaranteed. If order is important, you'll need to call this command
+// multiple times.
+//
 // For each parameter (`Using` clause), this command will look into the
 // environment for a matching variable. If it finds one, it will add that
 // variable to the context. If it does not find one, it will expand the

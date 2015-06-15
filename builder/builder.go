@@ -9,13 +9,15 @@ package builder
 import (
 	"github.com/Masterminds/cookoo"
 	"github.com/Masterminds/cookoo/fmt"
-	"github.com/Masterminds/cookoo/io"
+	//"github.com/Masterminds/cookoo/io"
 	"github.com/deis/deis/builder/confd"
 	"github.com/deis/deis/builder/docker"
 	"github.com/deis/deis/builder/env"
 	"github.com/deis/deis/builder/etcd"
+	"github.com/deis/deis/builder/sshd"
 	"log"
 	"os"
+	"os/signal"
 	"time"
 )
 
@@ -28,10 +30,13 @@ const (
 //
 // Run returns on of the Status* status code constants.
 func Run(cmd string, logger *log.Logger) int {
-	reg, router, cxt := cookoo.Cookoo()
+	reg, router, ocxt := cookoo.Cookoo()
+	cxt := &CxtMunger{ocxt}
 
-	out := io.NewColorizer(os.Stdout)
-	cxt.AddLogger("stdout", out)
+	log.SetFlags(0) // Time is captured elsewhere.
+
+	//out := io.NewColorizer(os.Stdout)
+	cxt.AddLogger("stdout", os.Stdout)
 
 	// Build the routes
 	routes(reg)
@@ -45,6 +50,17 @@ func Run(cmd string, logger *log.Logger) int {
 	return StatusOk
 }
 
+type CxtMunger struct {
+	cookoo.Context
+}
+
+func (c *CxtMunger) Log(prefix string, v ...interface{}) {
+	c.Context.Log(prefix+" ", v...)
+}
+func (c *CxtMunger) Logf(prefix, format string, v ...interface{}) {
+	c.Context.Logf(prefix+" ", format, v...)
+}
+
 // routes builds the Cookoo registry.
 //
 // Esssentially this is a list of all of the things that Builder can do, broken
@@ -55,21 +71,31 @@ func routes(reg *cookoo.Registry) {
 		Name: "boot",
 		Help: "Boot the builder",
 		Does: cookoo.Tasks{
+
+			// ENV: Make sure the environment is correct.
 			cookoo.Cmd{
 				Name: "vars",
 				Fn:   env.Get,
 				Using: []cookoo.Param{
-					{Name: "Host", DefaultValue: "127.0.0.1"},
+					{Name: "HOST", DefaultValue: "127.0.0.1"},
 					{Name: "ETCD_PORT", DefaultValue: "4001"},
-					{Name: "ETCD", DefaultValue: "http://$HOST:$ETCD_PORT"},
 					{Name: "ETCD_PATH", DefaultValue: "/deis/builder"},
 					{Name: "ETCD_TTL", DefaultValue: "20"},
 				},
 			},
+			cookoo.Cmd{ // This depends on others being processed first.
+				Name: "vars2",
+				Fn:   env.Get,
+				Using: []cookoo.Param{
+					{Name: "ETCD", DefaultValue: "http://$HOST:$ETCD_PORT"},
+				},
+			},
+
+			// ETCD: Make sure Etcd is running, and do the initial population.
 			cookoo.Cmd{
 				Name:  "client",
 				Fn:    etcd.CreateClient,
-				Using: []cookoo.Param{{Name: "url", DefaultValue: "http://localhost:4001", From: "cxt:ETCD"}},
+				Using: []cookoo.Param{{Name: "url", DefaultValue: "http://127.0.0.1:4001", From: "cxt:ETCD"}},
 			},
 			cookoo.Cmd{
 				Name: "ls",
@@ -100,6 +126,8 @@ func routes(reg *cookoo.Registry) {
 					{Name: "client", From: "cxt:client"},
 				},
 			},
+
+			// CONFD: Build out the templates, then start the Confd server.
 			cookoo.Cmd{
 				Name:  "once",
 				Fn:    confd.RunOnce,
@@ -110,9 +138,88 @@ func routes(reg *cookoo.Registry) {
 				Fn:    confd.Run,
 				Using: []cookoo.Param{{Name: "node", From: "cxt:ETCD"}},
 			},
+
+			// DOCKER: start up Docker and make sure it's running.
 			cookoo.Cmd{
 				Name: "dockerclean",
 				Fn:   docker.Cleanup,
+			},
+			cookoo.Cmd{
+				Name: "dockerstart",
+				Fn:   docker.Start,
+			},
+			cookoo.Cmd{
+				Name: "waitfordocker",
+				Fn:   docker.Wait,
+			},
+			cookoo.Cmd{
+				Name: "slugbuilder",
+				Fn:   docker.BuildImage,
+				Using: []cookoo.Param{
+					{Name: "tag", DefaultValue: "deis/slugbuilder"},
+					{Name: "path", DefaultValue: "/usr/local/src/slugbuilder/"},
+				},
+			},
+			cookoo.Cmd{
+				Name: "slugrunner",
+				Fn:   docker.BuildImage,
+				Using: []cookoo.Param{
+					{Name: "tag", DefaultValue: "deis/slugrunner"},
+					{Name: "path", DefaultValue: "/usr/local/src/slugrunner/"},
+				},
+			},
+			// Start SSHD.
+			cookoo.Cmd{
+				Name: "sshdstart",
+				Fn:   sshd.Start,
+			},
+
+			// Now watch for events on etcd, and trigger a git chec-repos for
+			// each. For the most part, this runs in the background.
+			cookoo.Cmd{
+				Name: "Cleanup",
+				Fn:   etcd.Watch,
+				Using: []cookoo.Param{
+					{Name: "client", From: "cxt:client"},
+				},
+			},
+
+			cookoo.Cmd{
+				Name: "Running",
+				Fn:   cookoo.LogMessage,
+				Using: []cookoo.Param{
+					{Name: "msg", DefaultValue: "Builder is running."},
+					{Name: "level", DefaultValue: "»"},
+				},
+			},
+
+			// If there's an EXTERNAL_PORT, we publish info to etcd.
+			cookoo.Cmd{
+				Name: "externalport",
+				Fn:   env.Get,
+				Using: []cookoo.Param{
+					{Name: "EXTERNAL_PORT", DefaultValue: ""},
+				},
+			},
+			cookoo.Cmd{
+				Name: "etcdupdate",
+				Fn:   etcd.UpdateHostPort,
+				Using: []cookoo.Param{
+					{Name: "base", From: "cxt:ETCD_PATH"},
+					{Name: "host", From: "cxt:HOST"},
+					{Name: "client", From: "cxt:client"},
+					{Name: "sshdPid", From: "cxt:sshd"},
+				},
+			},
+
+			// Finally, we wait around for a signal, and then cleanup.
+			cookoo.Cmd{
+				Name: "listen",
+				Fn:   KillOnExit,
+				Using: []cookoo.Param{
+					{Name: "docker", From: "cxt:dockerstart"},
+					{Name: "sshd", From: "cxt:sshdstart"},
+				},
 			},
 		},
 	})
@@ -125,4 +232,31 @@ func Sleep(c cookoo.Context, p *cookoo.Params) (interface{}, cookoo.Interrupt) {
 	time.Sleep(dur)
 	c.Logf("info", "Woke up.")
 	return true, nil
+}
+
+// KillOnExit kills PIDs when the program exits.
+//
+// Otherwise, this blocks until an os.Interrupt or os.Kill is received.
+//
+// Params:
+//  This treats Params as a map of process names (unimportant) to PIDs. It then
+// attempts to kill all of the pids that it receives.
+func KillOnExit(c cookoo.Context, p *cookoo.Params) (interface{}, cookoo.Interrupt) {
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, os.Interrupt, os.Kill)
+
+	<-sigs
+	pids := p.AsMap()
+	killed := 0
+	for name, pid := range pids {
+		pid, ok := pid.(int)
+		if ok {
+			if proc, err := os.FindProcess(pid); err == nil {
+				c.Logf("info", "Killing %s (pid=%d)", name, pid)
+				proc.Kill()
+				killed++
+			}
+		}
+	}
+	return killed, nil
 }

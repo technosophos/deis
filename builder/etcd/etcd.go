@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -33,6 +35,14 @@ type EtcdGetter interface {
 // Usually you will want to use go-etcd/etcd.Client to satisfy this.
 type EtcdDirCreator interface {
 	CreateDir(string, uint64) (*etcd.Response, error)
+}
+
+type EtcdWatcher interface {
+	Watch(string, uint64, bool, chan *etcd.Response, chan bool) (*etcd.Response, error)
+}
+
+type EtcdSetter interface {
+	Set(string, string, uint64) (*etcd.Response, error)
 }
 
 // CreateClient creates a new Etcd client and prepares it for work.
@@ -84,8 +94,78 @@ func Get(c cookoo.Context, p *cookoo.Params) (interface{}, cookoo.Interrupt) {
 	path := p.Get("path", "/").(string)
 
 	res, err := client.Get(path, false, false)
-	c.Logf("debug", "Result: %V", res)
+
+	if err != nil {
+		return res, err
+	}
+	if !res.Node.Dir {
+		return res, fmt.Errorf("Expected / to be a dir.")
+	}
+	//c.Logf("debug", "Result: %V", res)
 	return res, err
+}
+
+func Set(c cookoo.Context, p *cookoo.Params) (interface{}, cookoo.Interrupt) {
+	key := p.Get("key", "").(string)
+	value := p.Get("value", "").(string)
+	ttl := p.Get("ttl", uint64(20)).(uint64)
+	client := p.Get("client", nil).(EtcdSetter)
+
+	res, err := client.Set(key, value, ttl)
+	if err != nil {
+		c.Logf("Failed to set %s=%s", key, value)
+	}
+
+	return res, err
+}
+
+func UpdateHostPort(c cookoo.Context, p *cookoo.Params) (interface{}, cookoo.Interrupt) {
+
+	base := p.Get("base", "").(string)
+	host := p.Get("host", "").(string)
+	port := p.Get("port", "").(string)
+	client := p.Get("client", nil).(EtcdSetter)
+	sshd := p.Get("sshdPid", 0).(int)
+
+	// If no port is specified, we don't do anything.
+	if len(port) == 0 {
+		return false, nil
+	}
+
+	var ttl uint64 = uint64(20)
+
+	if err := setHostPort(client, base, host, port, ttl); err != nil {
+		c.Logf("error", "Etcd error setting host/port: %s", err)
+		return false, err
+	}
+
+	go func() {
+		ticker := time.Tick(10 * time.Second)
+		for range ticker {
+			c.Logf("info", "Setting SSHD host/port")
+			if _, err := os.FindProcess(sshd); err != nil {
+				c.Logf("error", "Lost SSHd process: %s", err)
+				return
+			} else {
+				if err := setHostPort(client, base, host, port, ttl); err != nil {
+					c.Logf("error", "Etcd error setting host/port: %s", err)
+					return
+				}
+			}
+		}
+	}()
+
+	return true, nil
+}
+
+func setHostPort(client EtcdSetter, base, host, port string, ttl uint64) error {
+	if _, err := client.Set(base+"/host", host, ttl); err != nil {
+		return err
+	}
+	if _, err := client.Set(base+"/port", port, ttl); err != nil {
+		return err
+	}
+	return nil
 }
 
 // MakeDir makes a directory in Etcd.
@@ -111,7 +191,80 @@ func MakeDir(c cookoo.Context, p *cookoo.Params) (interface{}, cookoo.Interrupt)
 
 	res, err := client.CreateDir(name, ttl)
 	c.Logf("debug", "Result: %V", res)
-	return res, err
+	if err != nil {
+		// FIXME: Do we want this to be recoverable?
+		return res, &cookoo.RecoverableError{err.Error()}
+	}
+
+	return res, nil
+
+}
+
+// Watch watches a given path, and executes a git cehck-repos for each event.
+//
+// It starts the watcher and then returns. The watcher runs on its own
+// goroutine. To stop the watching, send the returned channel a bool.
+//
+// Params:
+// - client (EtcdWatcher): An Etcd client.
+// - path (string): The path to watch
+//
+// Returns:
+// 	- chan bool: Send this a message to stop the watcher.
+func Watch(c cookoo.Context, p *cookoo.Params) (interface{}, cookoo.Interrupt) {
+	// etcdctl -C $ETCD watch --recursive /deis/services
+	path := p.Get("path", "/deis/services").(string)
+	cli, ok := p.Has("client")
+	if !ok {
+		return nil, errors.New("No etcd client found.")
+	}
+	client := cli.(EtcdWatcher)
+
+	receiver := make(chan *etcd.Response)
+
+	stop := make(chan bool)
+	// Buffer the channels so that we don't hang waiting for go-etcd to
+	// read off the channel.
+	stopetcd := make(chan bool, 1)
+	stopwatch := make(chan bool, 1)
+
+	// Watch for errors.
+	go func() {
+		// When a receiver is passed in, no *Response is ever returned. Instead,
+		// Watch acts like an error channel, and receiver gets all of the messages.
+		_, err := client.Watch(path, 0, true, receiver, stopetcd)
+		if err != nil {
+			c.Logf("info", "Watcher stopped with error %s", err)
+			stopwatch <- true
+			close(stopwatch)
+		}
+	}()
+	// Watch for events
+	go func() {
+		for {
+			select {
+			case msg := <-receiver:
+				c.Logf("Received notification %s for %s", msg.Action, msg.Node.Key)
+				git := exec.Command("/home/git/check-repos")
+				if out, err := git.CombinedOutput(); err != nil {
+					c.Logf("error", "Failed git check-repos: %s", err)
+					c.Logf("info", "Output: %s", out)
+				}
+			case <-stopwatch:
+				return
+			}
+		}
+	}()
+	// Fan out stop requests.
+	go func() {
+		<-stop
+		stopwatch <- true
+		stopetcd <- true
+		close(stopwatch)
+		close(stopetcd)
+	}()
+
+	return stop, nil
 }
 
 // checkRetry overrides etcd.DefaultCheckRetry.

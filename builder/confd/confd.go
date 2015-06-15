@@ -13,9 +13,13 @@ import (
 	"fmt"
 	"os/exec"
 	"strconv"
+	"time"
 )
 
 // RunOnce runs the equivalent of `confd --onetime`.
+//
+// This may run the process repeatedly until either we time out (~20 minutes) or
+// the templates are successfully built.
 //
 // Importantly, this blocks until the run is complete.
 //
@@ -28,17 +32,27 @@ import (
 func RunOnce(c cookoo.Context, p *cookoo.Params) (interface{}, cookoo.Interrupt) {
 
 	node := p.Get("node", "127.0.0.1:4001").(string)
+
 	cmd := exec.Command("confd", "-onetime", "-node", node, "-log-level", "error")
 
 	fmt.Println("Building confd templates. This may take a moment.")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		c.Logf("error", string(out))
-		return out, err
-	} else {
-		c.Logf("info", "Templates generated for %s", node)
-		return out, nil
+
+	limit := 1200
+	timeout := time.Second * 3
+	var lasterr error
+	for i := 0; i < limit; i++ {
+		if out, err := cmd.CombinedOutput(); err == nil {
+			c.Logf("info", "Templates generated for %s on run %d", node, i)
+			return out, nil
+		} else {
+			lasterr = err
+		}
+
+		time.Sleep(timeout)
+		c.Logf("info", "Re-trying template build. (Elapsed time: %d)", i*3)
 	}
 
+	return nil, fmt.Errorf("Could not build confd templates before timeout. Last error: %s", lasterr)
 }
 
 // Run starts confd and runs it in the background.
@@ -66,8 +80,9 @@ func Run(c cookoo.Context, p *cookoo.Params) (interface{}, cookoo.Interrupt) {
 	c.Logf("info", "Watching confd.")
 	log := c.Logf
 	safely.Go(func() {
-		err := cmd.Wait()
-		log("info", "confd exited: %v", err)
+		if err := cmd.Wait(); err != nil {
+			log("info", "confd exited with error: %s", err)
+		}
 	})
 
 	return true, nil
