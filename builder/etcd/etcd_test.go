@@ -42,6 +42,26 @@ func TestGet(t *testing.T) {
 	}
 }
 
+func TestSet(t *testing.T) {
+	reg, router, cxt := cookoo.Cookoo()
+
+	reg.Route("test", "Test route").
+		Does(Set, "res").
+		Using("client").WithDefault(&stubClient{}).
+		Using("key").WithDefault("Hello").
+		Using("value").WithDefault("World")
+
+	err := router.HandleRequest("test", cxt, true)
+	if err != nil {
+		t.Error(err)
+	}
+
+	if res := cxt.Get("res", nil); res == nil {
+		t.Error("Expected an *etcd.Response, not nil.")
+	} else if tt, ok := res.(*etcd.Response); !ok {
+		t.Errorf("Expected instance of *etcd.Response. Got %T", tt)
+	}
+}
 func TestMakeDir(t *testing.T) {
 	reg, router, cxt := cookoo.Cookoo()
 
@@ -72,6 +92,10 @@ func (s *stubClient) Get(key string, sort, recurse bool) (*etcd.Response, error)
 
 func (s *stubClient) CreateDir(key string, ttl uint64) (*etcd.Response, error) {
 	return s.response("createdir"), nil
+}
+
+func (s *stubClient) Set(key string, value string, ttl uint64) (*etcd.Response, error) {
+	return s.response("set"), nil
 }
 
 func (s *stubClient) response(a string) *etcd.Response {

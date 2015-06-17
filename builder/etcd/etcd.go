@@ -105,6 +105,16 @@ func Get(c cookoo.Context, p *cookoo.Params) (interface{}, cookoo.Interrupt) {
 	return res, err
 }
 
+// Set sets a value in etcd.
+//
+// Params:
+// 	- key (string): The key
+// 	- value (string): The value
+// 	- ttl (uint64): Time to live
+// 	- client (EtcdGetter): Client, usually an *etcd.Client.
+//
+// Returns:
+// 	- *etcd.Result
 func Set(c cookoo.Context, p *cookoo.Params) (interface{}, cookoo.Interrupt) {
 	key := p.Get("key", "").(string)
 	value := p.Get("value", "").(string)
@@ -119,6 +129,19 @@ func Set(c cookoo.Context, p *cookoo.Params) (interface{}, cookoo.Interrupt) {
 	return res, err
 }
 
+// UpdateHostPort intermittently notifies etcd of the builder's address.
+//
+// If `port` is specified, this will notify etcd at 10 second intervals that
+// the builder is listening at $HOST:$PORT, setting the TTL to 20 seconds.
+//
+// This will notify etcd as long as the local sshd is running.
+//
+// Params:
+// 	- base (string): The base path to write the data: $base/host and $base/port.
+// 	- host (string): The hostname
+// 	- port (string): The port
+// 	- client (EtcdSetter): The client to use to write the data to etcd.
+// 	- sshPid (int): The PID for SSHD. If SSHD dies, this stops notifying.
 func UpdateHostPort(c cookoo.Context, p *cookoo.Params) (interface{}, cookoo.Interrupt) {
 
 	base := p.Get("base", "").(string)
@@ -139,6 +162,7 @@ func UpdateHostPort(c cookoo.Context, p *cookoo.Params) (interface{}, cookoo.Int
 		return false, err
 	}
 
+	// Update etcd every ten seconds with this builder's host/port.
 	go func() {
 		ticker := time.Tick(10 * time.Second)
 		for range ticker {

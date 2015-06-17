@@ -83,7 +83,6 @@ func doStop(c *FleetClient, target string, wg *sync.WaitGroup, outchan chan stri
 		}
 
 		lastSubState = currentState.SystemdSubState
-		//fmt.Printf("Waiting for state %s, but in state %s\n", desiredState, currentState.SystemdSubState)
 		time.Sleep(250 * time.Millisecond)
 	}
 }

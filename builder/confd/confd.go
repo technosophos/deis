@@ -66,6 +66,7 @@ func RunOnce(c cookoo.Context, p *cookoo.Params) (interface{}, cookoo.Interrupt)
 // - interval (int, default:5): The rebuilding interval.
 //
 // Returns
+//  bool true if this succeeded.
 func Run(c cookoo.Context, p *cookoo.Params) (interface{}, cookoo.Interrupt) {
 	// TODO: What should be done if confd dies at some point?
 

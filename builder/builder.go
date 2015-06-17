@@ -29,7 +29,7 @@ const (
 // Run executes the boot commands for builder.
 //
 // Run returns on of the Status* status code constants.
-func Run(cmd string, logger *log.Logger) int {
+func Run(cmd string) int {
 	reg, router, ocxt := cookoo.Cookoo()
 	cxt := &CxtMunger{ocxt}
 
@@ -43,22 +43,11 @@ func Run(cmd string, logger *log.Logger) int {
 
 	// Boot
 	if err := router.HandleRequest(cmd, cxt, false); err != nil {
-		logger.Printf("Error: %s", err)
+		cxt.Logf("error", "Fatal errror on boot: %s", err)
 		return StatusLocalError
 	}
 
 	return StatusOk
-}
-
-type CxtMunger struct {
-	cookoo.Context
-}
-
-func (c *CxtMunger) Log(prefix string, v ...interface{}) {
-	c.Context.Log(prefix+" ", v...)
-}
-func (c *CxtMunger) Logf(prefix, format string, v ...interface{}) {
-	c.Context.Logf(prefix+" ", format, v...)
 }
 
 // routes builds the Cookoo registry.
@@ -67,6 +56,9 @@ func (c *CxtMunger) Logf(prefix, format string, v ...interface{}) {
 // down into a step-by-step list.
 func routes(reg *cookoo.Registry) {
 
+	// The "boot" route starts up the builder as a daemon process. Along the
+	// way, it starts and configures multiple services, including etcd, confd,
+	// and sshd.
 	reg.AddRoute(cookoo.Route{
 		Name: "boot",
 		Help: "Boot the builder",
@@ -174,7 +166,7 @@ func routes(reg *cookoo.Registry) {
 				Fn:   sshd.Start,
 			},
 
-			// Now watch for events on etcd, and trigger a git chec-repos for
+			// ETDCD: Now watch for events on etcd, and trigger a git check-repos for
 			// each. For the most part, this runs in the background.
 			cookoo.Cmd{
 				Name: "Cleanup",
@@ -183,16 +175,6 @@ func routes(reg *cookoo.Registry) {
 					{Name: "client", From: "cxt:client"},
 				},
 			},
-
-			cookoo.Cmd{
-				Name: "Running",
-				Fn:   cookoo.LogMessage,
-				Using: []cookoo.Param{
-					{Name: "msg", DefaultValue: "Builder is running."},
-					{Name: "level", DefaultValue: "»"},
-				},
-			},
-
 			// If there's an EXTERNAL_PORT, we publish info to etcd.
 			cookoo.Cmd{
 				Name: "externalport",
@@ -212,7 +194,7 @@ func routes(reg *cookoo.Registry) {
 				},
 			},
 
-			// Finally, we wait around for a signal, and then cleanup.
+			// DAEMON: Finally, we wait around for a signal, and then cleanup.
 			cookoo.Cmd{
 				Name: "listen",
 				Fn:   KillOnExit,
@@ -226,6 +208,9 @@ func routes(reg *cookoo.Registry) {
 }
 
 // Sleep delays the execution of the remainder of the chain of commands.
+//
+// Params:
+// 	-duration (time.Duration): Time to sleep.
 func Sleep(c cookoo.Context, p *cookoo.Params) (interface{}, cookoo.Interrupt) {
 	dur := p.Get("duration", 10*time.Millisecond).(time.Duration)
 	c.Logf("info", "Sleeping.")
@@ -245,7 +230,11 @@ func KillOnExit(c cookoo.Context, p *cookoo.Params) (interface{}, cookoo.Interru
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, os.Interrupt, os.Kill)
 
+	c.Log("»", "Builder is running.")
+
 	<-sigs
+
+	c.Log("info", "Builder received signal to stop.")
 	pids := p.AsMap()
 	killed := 0
 	for name, pid := range pids {
@@ -259,4 +248,16 @@ func KillOnExit(c cookoo.Context, p *cookoo.Params) (interface{}, cookoo.Interru
 		}
 	}
 	return killed, nil
+}
+
+// CxtMunger fixes the spacing brokenness in the Go logger.
+type CxtMunger struct {
+	cookoo.Context
+}
+
+func (c *CxtMunger) Log(prefix string, v ...interface{}) {
+	c.Context.Log(prefix+" ", v...)
+}
+func (c *CxtMunger) Logf(prefix, format string, v ...interface{}) {
+	c.Context.Logf(prefix+" ", format, v...)
 }

@@ -75,8 +75,6 @@ export ETCD_TTL=${ETCD_TTL:-20}
 #docker build -t deis/slugbuilder /usr/local/src/slugbuilder/
 #docker build -t deis/slugrunner /usr/local/src/slugrunner/
 
-builder boot
-
 # start an SSH daemon to process `git push` requests
 #/usr/sbin/sshd -D -e &
 #SSHD_PID=$!
@@ -120,3 +118,6 @@ builder boot
 #fi
 
 #wait
+# Start the builder
+builder
+
