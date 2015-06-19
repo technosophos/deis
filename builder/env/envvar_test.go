@@ -23,6 +23,7 @@ func TestGet(t *testing.T) {
 		Does(Get, "res").
 		Using(drink).WithDefault("tea").
 		Using(cookies).WithDefault("chocolate chip").
+		Does(Get, "res2").
 		Using(snack).WithDefault(snackVal)
 
 	err := router.HandleRequest("test", cxt, true)

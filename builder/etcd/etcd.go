@@ -6,6 +6,7 @@ package etcd
 import (
 	"errors"
 	"fmt"
+	"io/ioutil"
 	"net/http"
 	"os"
 	"os/exec"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/Masterminds/cookoo"
 	"github.com/Masterminds/cookoo/safely"
+
 	"github.com/coreos/go-etcd/etcd"
 )
 
@@ -44,6 +46,11 @@ type EtcdWatcher interface {
 
 type EtcdSetter interface {
 	Set(string, string, uint64) (*etcd.Response, error)
+}
+
+type EtcdGetterSetter interface {
+	EtcdGetter
+	EtcdSetter
 }
 
 // CreateClient creates a new Etcd client and prepares it for work.
@@ -102,7 +109,6 @@ func Get(c cookoo.Context, p *cookoo.Params) (interface{}, cookoo.Interrupt) {
 	if !res.Node.Dir {
 		return res, fmt.Errorf("Expected / to be a dir.")
 	}
-	//c.Logf("debug", "Result: %V", res)
 	return res, err
 }
 
@@ -153,6 +159,149 @@ func Set(c cookoo.Context, p *cookoo.Params) (interface{}, cookoo.Interrupt) {
 	}
 
 	return res, err
+}
+
+// FindSshUser finds an SSH user by public key.
+//
+// Some parts of the system require that we know not only the SSH key, but also
+// the name of the user. That information is stored in etcd.
+//
+// Params:
+// 	- client (EtcdGetter)
+// 	- fingerprint (string): The fingerprint of the SSH key.
+//
+// Returns:
+// - username (string)
+func FindSshUser(c cookoo.Context, p *cookoo.Params) (interface{}, cookoo.Interrupt) {
+	client := p.Get("client", nil).(EtcdGetter)
+	fingerprint := p.Get("fingerprint", nil).(string)
+
+	res, err := client.Get("/deis/builder/users", false, true)
+	if err != nil {
+		c.Logf("warn", "Error querying etcd: %s", err)
+		return "", err
+	} else if res.Node == nil || !res.Node.Dir {
+		c.Logf("warn", "No users found in etcd.")
+		return "", errors.New("Users not found")
+	}
+	for _, user := range res.Node.Nodes {
+		c.Logf("info", "Checking user %s", user.Key)
+		for _, keyprint := range user.Nodes {
+			if strings.HasSuffix(keyprint.Key, fingerprint) {
+				parts := strings.Split(user.Key, "/")
+				username := parts[len(parts)-1]
+				c.Logf("info", "Found user %s for fingerprint %s", username, fingerprint)
+				return username, nil
+			}
+		}
+	}
+
+	return "", fmt.Errorf("User not found for fingerprint %s", fingerprint)
+}
+
+// StoreHostKeys stores SSH hostkeys locally.
+//
+// First it tries to fetch them from etcd. If the keys are not present there,
+// it generates new ones and then puts the new onces into etcd.
+//
+// Params:
+// 	- client(EtcdGetterSetter)
+// 	- ciphers([]string): A list of ciphers to generate. Defaults are dsa,
+// 		ecdsa, ed25519 and rsa.
+// 	- basepath (string): Base path in etcd (ETCD_PATH).
+// Returns:
+//
+func StoreHostKeys(c cookoo.Context, p *cookoo.Params) (interface{}, cookoo.Interrupt) {
+	defaultCiphers := []string{"rsa", "dsa", "ecdsa", "ed25519"}
+	client := p.Get("client", nil).(EtcdGetterSetter)
+	ciphers := p.Get("ciphers", defaultCiphers).([]string)
+	basepath := p.Get("basepath", "/deis/builder").(string)
+
+	res, err := client.Get("sshHostKey", false, false)
+	if err != nil || res.Node == nil {
+		c.Logf("info", "Could not get SSH host key from etcd. Generating new ones.")
+		genSshKeys(c)
+		if err := keysToEtcd(c, client, ciphers, basepath); err != nil {
+			return nil, err
+		}
+	} else if err := keysToLocal(c, client, ciphers, basepath); err != nil {
+		c.Logf("info", "Fetching SSH host keys from etcd.")
+		return nil, err
+	}
+
+	return nil, nil
+}
+
+// keysToLocal copies SSH host keys from etcd to the local file system.
+//
+// This only fails if the main key, sshHostKey cannot be stored or retrieved.
+func keysToLocal(c cookoo.Context, client EtcdGetter, ciphers []string, etcdPath string) error {
+	lpath := "/etc/ssh/ssh_host_%s_key"
+	privkey := "%s/sshHost%sKey"
+	for _, cipher := range ciphers {
+		path := fmt.Sprintf(lpath, cipher)
+		key := fmt.Sprintf(privkey, etcdPath, cipher)
+		res, err := client.Get(key, false, false)
+		if err != nil || res.Node == nil {
+			continue
+		}
+
+		content := res.Node.Value
+		if err := ioutil.WriteFile(path, []byte(content), 0600); err != nil {
+			c.Logf("error", "Error writing ssh host key file: %s", err)
+		}
+	}
+
+	// Now get generic key.
+	res, err := client.Get("sshHostKey", false, false)
+	if err != nil || res.Node == nil {
+		return fmt.Errorf("Failed to get sshHostKey from etcd. %v", err)
+	}
+
+	content := res.Node.Value
+	if err := ioutil.WriteFile("/etc/ssh/ssh_host_key", []byte(content), 0600); err != nil {
+		c.Logf("error", "Error writing ssh host key file: %s", err)
+		return err
+	}
+	return nil
+}
+
+// keysToEtcd copies local keys into etcd.
+//
+// It only fails if it cannot copy ssh_host_key to sshHostKey. All other
+// abnormal conditions are logged, but not considered to be failures.
+func keysToEtcd(c cookoo.Context, client EtcdSetter, ciphers []string, etcdPath string) error {
+	lpath := "/etc/ssh/ssh_host_%s_key"
+	privkey := "%s/sshHost%sKey"
+	for _, cipher := range ciphers {
+		path := fmt.Sprintf(lpath, cipher)
+		key := fmt.Sprintf(privkey, etcdPath, cipher)
+		content, err := ioutil.ReadFile(path)
+		if err != nil {
+			c.Logf("info", "No key named %s", path)
+		} else if _, err := client.Set(key, string(content), 0); err != nil {
+			c.Logf("error", "Could not store ssh key in etcd: %s", err)
+		}
+	}
+	// Now we set the generic key:
+	if content, err := ioutil.ReadFile("/etc/ssh/ssh_host_key"); err != nil {
+		c.Logf("error", "Could not read the ssh_host_key file.")
+		return err
+	} else if _, err := client.Set("sshHostKey", string(content), 0); err != nil {
+		c.Logf("error", "Failed to set sshHostKey in etcd.")
+		return err
+	}
+	return nil
+}
+
+// genSshKeys generates the default set of SSH host keys.
+func genSshKeys(c cookoo.Context) {
+	// Generate a new key
+	out, err := exec.Command("ssh-keygen", "-A").CombinedOutput()
+	if err != nil {
+		c.Logf("info", "ssh-keygen: %s", out)
+		c.Logf("error", "Failed to generate SSH keys: %s", err)
+	}
 }
 
 // UpdateHostPort intermittently notifies etcd of the builder's address.
@@ -241,7 +390,6 @@ func MakeDir(c cookoo.Context, p *cookoo.Params) (interface{}, cookoo.Interrupt)
 	}
 
 	res, err := client.CreateDir(name, ttl)
-	c.Logf("debug", "Result: %V", res)
 	if err != nil {
 		// FIXME: Do we want this to be recoverable?
 		return res, &cookoo.RecoverableError{err.Error()}

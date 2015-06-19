@@ -1,15 +1,20 @@
 package docker
 
 import (
+	"archive/tar"
+	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/Masterminds/cookoo"
 	"github.com/Masterminds/cookoo/safely"
+	docli "github.com/fsouza/go-dockerclient"
 )
 
 var DockSock = "/var/run/docker.sock"
@@ -30,7 +35,25 @@ func Cleanup(c cookoo.Context, p *cookoo.Params) (interface{}, cookoo.Interrupt)
 	return false, nil
 }
 
+// CreateClient creates a new Docker client.
+//
+// Params:
+// 	- url (string): The URI to the Docker daemon. This defaults to the UNIX
+// 		socket /var/run/docker.sock.
+//
+// Returns:
+// 	- *docker.Client
+//
+func CreateClient(c cookoo.Context, p *cookoo.Params) (interface{}, cookoo.Interrupt) {
+	path := p.Get("url", "unix:///var/run/docker.sock").(string)
+
+	return docli.NewClient(path)
+}
+
 // Start starts a Docker daemon.
+//
+// This assumes the presence of the docker client on the host. It does not use
+// the API.
 func Start(c cookoo.Context, p *cookoo.Params) (interface{}, cookoo.Interrupt) {
 	dargs := []string{
 		"-d",
@@ -45,11 +68,6 @@ func Start(c cookoo.Context, p *cookoo.Params) (interface{}, cookoo.Interrupt) {
 		"100.64.0.0/10",
 		//"--storage-driver=overlay", // Add this dynamically.
 	}
-	//mkdir --parents --mode=0700 /
-	//fstype=$(findmnt --noheadings --output FSTYPE --target /)
-	//if [[ "$fstype" == "overlay" ]]; then
-	//DRIVER_OVERRIDE="--storage-driver=overlay"
-	//fi
 
 	// There is probably a better way to do this. I'm not sure whether the
 	// original intent of the mkdir was to accomplish something, or just check
@@ -81,19 +99,35 @@ func Start(c cookoo.Context, p *cookoo.Params) (interface{}, cookoo.Interrupt) {
 }
 
 // Wait delays until Docker appears to be up and running.
+//
+// Params:
+// 	- client (*docker.Client): Docker client.
+// 	- timeout (time.Duration): Time after which to give up.
+//
+// Returns:
+// 	- boolean true if the server is up.
 func Wait(c cookoo.Context, p *cookoo.Params) (interface{}, cookoo.Interrupt) {
-	limit := 100
-	timeout := time.Second
+	ok, missing := p.RequiresValue("client")
+	if !ok {
+		return nil, &cookoo.FatalError{"Missing required fields: " + strings.Join(missing, ", ")}
+	}
+	cli := p.Get("client", nil).(*docli.Client)
+	timeout := p.Get("timeout", 30*time.Second).(time.Duration)
 
-	for i := 0; i < limit; i++ {
-		if _, err := os.Stat(DockSock); err == nil {
-			c.Logf("info", "Docker service started.")
+	keepon := true
+	timer := time.AfterFunc(timeout, func() {
+		keepon = false
+	})
+
+	for keepon == true {
+		if err := cli.Ping(); err == nil {
+			timer.Stop()
+			c.Logf("info", "Docker is running.")
 			return true, nil
 		}
-		c.Logf("info", "Waiting for docker. Elapsed time: %d", i)
-		time.Sleep(timeout)
+		time.Sleep(time.Second)
 	}
-	return false, fmt.Errorf("Docker doesn't seem to be waking up.")
+	return false, fmt.Errorf("Docker timed out after waiting %s for server.", timeout)
 }
 
 type BuildImg struct {
@@ -104,11 +138,14 @@ type BuildImg struct {
 //
 // Params:
 //	-images ([]BuildImg): Images to build
+// 	-alwaysFetch (bool): Default false. If set to true, this will always fetch
+// 		the Docker image even if it already exists in the registry.
 //
 // Returns:
 //
 func ParallelBuild(c cookoo.Context, p *cookoo.Params) (interface{}, cookoo.Interrupt) {
 	images := p.Get("images", []BuildImg{}).([]BuildImg)
+	//client := p.Get("client", nil).(*docli.Client)
 
 	var wg sync.WaitGroup
 
@@ -117,6 +154,7 @@ func ParallelBuild(c cookoo.Context, p *cookoo.Params) (interface{}, cookoo.Inte
 		safely.GoDo(c, func() {
 			c.Logf("info", "Starting build for %s (tag: %s", img.Path, img.Tag)
 			_, err := buildImg(c, img.Path, img.Tag)
+			//err := build(c, img.Path, img.Tag, client)
 			if err != nil {
 				c.Logf("error", "Failed to build docker image: %s", err)
 			}
@@ -160,4 +198,44 @@ func buildImg(c cookoo.Context, path, tag string) ([]byte, error) {
 		c.Logf("info", "Docker: %s", out)
 	}
 	return out, err
+}
+
+/*
+ * This function only works for very simple docker files that do not have
+ * local resources.
+ * Need to suck in all of the files in ADD directives, too.
+ */
+// build takes a Dockerfile and builds an image.
+func build(c cookoo.Context, path, tag string, client *docli.Client) error {
+	dfile := filepath.Join(path, "Dockerfile")
+
+	// Stat the file
+	info, err := os.Stat(dfile)
+	if err != nil {
+		return fmt.Errorf("Dockerfile stat: %s", err)
+	}
+	file, err := os.Open(dfile)
+	if err != nil {
+		return fmt.Errorf("Dockerfile open: %s", err)
+	}
+	defer file.Close()
+
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	tw.WriteHeader(&tar.Header{
+		Name:    "Dockerfile",
+		Size:    info.Size(),
+		ModTime: info.ModTime(),
+	})
+	io.Copy(tw, file)
+	if err := tw.Close(); err != nil {
+		return fmt.Errorf("Dockerfile tar: %s", err)
+	}
+
+	options := docli.BuildImageOptions{
+		Name:         tag,
+		InputStream:  &buf,
+		OutputStream: os.Stdout,
+	}
+	return client.BuildImage(options)
 }

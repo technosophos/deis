@@ -7,6 +7,15 @@ import (
 	"github.com/coreos/go-etcd/etcd"
 )
 
+func TestInterfaces(t *testing.T) {
+	// Throughout the codebase, we assume that our interfaces match what the
+	// etcd client provides. This is a canary to verify.
+	cli := etcd.NewClient([]string{"http://localhost:4001"})
+	var _ EtcdGetter = cli
+	var _ EtcdSetter = cli
+	var _ EtcdGetterSetter = cli
+}
+
 func TestCreateClient(t *testing.T) {
 	reg, router, cxt := cookoo.Cookoo()
 
@@ -106,6 +115,10 @@ func (s *stubClient) response(a string) *etcd.Response {
 		EtcdIndex: 1,
 		RaftIndex: 1,
 		RaftTerm:  1,
+		Node: &etcd.Node{
+			Dir: true,
+			Key: "/foo",
+		},
 	}
 
 }
