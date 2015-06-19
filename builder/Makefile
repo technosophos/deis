@@ -11,6 +11,7 @@ COMPONENT = $(notdir $(repo_path))
 IMAGE = $(IMAGE_PREFIX)$(COMPONENT):$(BUILD_TAG)
 DEV_IMAGE = $(DEV_REGISTRY)/$(IMAGE)
 BINARIES := extract-domain extract-types extract-version generate-buildhook get-app-config get-app-values publish-release-controller yaml2json-procfile
+
 BINARY_DEST_DIR := rootfs/usr/bin
 
 build: check-docker
@@ -18,6 +19,8 @@ build: check-docker
 		GOOS=linux GOARCH=amd64 CGO_ENABLED=0 godep go build -a -installsuffix cgo -ldflags '-s' -o $(BINARY_DEST_DIR)/$$i src/$$i.go || exit 1; \
 		$(call check-static-binary,$(BINARY_DEST_DIR)/$$i) \
 	done
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 godep go build -a -ldflags '-s' -o $(BINARY_DEST_DIR)/builder cli/builder.go || exit 1; \
+		$(call check-static-binary,$(BINARY_DEST_DIR)/builder) 
 	docker build -t $(IMAGE) rootfs
 
 clean: check-docker check-registry
