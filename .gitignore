@@ -48,6 +48,7 @@ mesos/**/bin/
 mesos/**/bindata/
 mesos/Dockerfile
 mesos/marathon-assembly.jar
+trireme/trireme
 
 # coverage reports
 .coverage
